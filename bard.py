@@ -28,6 +28,7 @@ nickname = config.get('irc', 'nickname')
 ident = config.get('irc', 'ident')
 realname = config.get('irc', 'realname')
 password = config.get('irc', 'password')
+context = config.get('bot', 'context')  # Załóżmy, że 'context' znajduje się w sekcji 'bot'
 
 # Connect to IRC server
 def connect(server, port, usessl, password, ident, realname, nickname, channels):
@@ -53,12 +54,11 @@ def connect(server, port, usessl, password, ident, realname, nickname, channels)
 
 irc = connect(server, port, usessl, password, ident, realname, nickname, channels)
 
-# Listen for messages from users and answer questions
 while True:
     try:
         data = irc.recv(4096).decode("UTF-8")
         if data:
-            print(data)
+            print("Raw data received: " + data)
     except UnicodeDecodeError:
         continue
     except:
@@ -89,24 +89,58 @@ while True:
                 print("Invited into channel " + data.split(" :")[1].strip() + ". Joining...")
         elif command == "PRIVMSG" and chunk[2].startswith("#") and chunk[3] == ":" + nickname + ":":
             channel = chunk[2].strip()
+            user_nick = chunk[0].split('!')[0][1:]  # Pobierz nazwę użytkownika zadającego pytanie
             question = data.split(nickname + ":")[1].strip()
+            custom_nick = None
+            if question.startswith("powiedz "):
+                custom_nick = question.split()[1].rstrip(',')
+                question = ' '.join(question.split()[2:])
+
+            full_question = context + ". " + question  # Dołącz 'context' na początku pytania
             try:
-                response = bard.get_answer(question)['content']
-                answers = [x.strip() for x in response.strip().split('\n')]
-                for answer in answers:
-                    while len(answer) > 0:
-                        if len(answer) <= 392:
-                            irc.send(bytes("PRIVMSG " + channel + " :" + answer + "\n", "UTF-8"))
-                            answer = ""
+                response = bard.get_answer(full_question)['content']
+                response = response.replace('"', '').replace('**', '').replace('Breżniew:', '')  # Usuń znaki " oraz ** oraz "Mentos:"
+                if "Jestem tylko modelem językowym" in response:
+                    response = "Od tego alkoholu już mi oczy szwankują, czego chcesz dziadu?"
+                response_parts = response.split('\n')
+                clean_response_parts = []
+                empty_lines_count = 0
+                for part in response_parts:
+                    if part.strip() == '':
+                        empty_lines_count += 1
+                        if empty_lines_count == 2:
+                            break
+                    else:
+                        clean_response_parts.append(part.strip())
+                        print(f"Raw response part {len(clean_response_parts)}: {part}")
+
+                clean_response_parts = [part for part in clean_response_parts if not part.startswith(("Odpowiedź jest", "Czy to jest to", "(", "* ", "Czy to jest odpowiedź", "Co myślisz o tej odpowiedzi", "Czy to jest", "Czy to spełnia", "Czy to odpowiedź")) and "[Image of" not in part]
+
+                full_response = ' '.join(clean_response_parts)
+                first_message = True
+                while len(full_response) > 0:
+                    if len(full_response) <= 392:
+                        if first_message:
+                            nick_to_use = custom_nick if custom_nick else user_nick
+                            irc.send(bytes(f"PRIVMSG {channel} :{nick_to_use}: {full_response}\n", "UTF-8"))
+                            first_message = False
                         else:
-                            last_space_index = answer[:392].rfind(" ")
-                            if last_space_index == -1:
-                                last_space_index = 392
-                            irc.send(bytes("PRIVMSG " + channel + " :" + answer[:last_space_index] + "\n", "UTF-8"))
-                            answer = answer[last_space_index:].lstrip()
+                            irc.send(bytes(f"PRIVMSG {channel} :{full_response}\n", "UTF-8"))
+                        full_response = ""
+                    else:
+                        last_space_index = full_response[:392].rfind(" ")
+                        if last_space_index == -1:
+                            last_space_index = 392
+                        if first_message:
+                            nick_to_use = custom_nick if custom_nick else user_nick
+                            irc.send(bytes(f"PRIVMSG {channel} :{nick_to_use}: {full_response[:last_space_index]}\n", "UTF-8"))
+                            first_message = False
+                        else:
+                            irc.send(bytes(f"PRIVMSG {channel} :{full_response[:last_space_index]}\n", "UTF-8"))
+                        full_response = full_response[last_space_index:].lstrip()
             except Exception as e:
                 print("Error: " + str(e))
-                irc.send(bytes("PRIVMSG " + channel + " :BARD PANIC! Check console for error message.\n", "UTF-8"))
+                irc.send(bytes(f"PRIVMSG {channel} :{user_nick}: BARD PANIC! Check console for error message.\n", "UTF-8"))
     else:
         continue
     time.sleep(1)
